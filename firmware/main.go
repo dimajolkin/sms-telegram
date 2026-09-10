@@ -125,15 +125,32 @@ func main() {
 	ui.Tick()
 	runtime.GC()
 	printMem("after ui")
+	println("NumCPU", runtime.NumCPU())
 	println("--- stage4 OK ready ---")
 
 	var (
 		smsFails   int
 		lastSMSTry time.Time
+		lastNet    time.Time
 	)
 	for {
-		ui.Tick()
-		runtime.GC()
+		// ~2с только UI — иначе TLS/модем съедают весь цикл (tasks scheduler).
+		uiUntil := time.Now().Add(2 * time.Second)
+		for time.Now().Before(uiUntil) {
+			ui.Tick()
+			if chatID != "" {
+				if num, ok := modem.PollMissedCall(); ok {
+					println("missed call:", num)
+					_ = tg.Send(chatID, "Пропущенный звонок\n\n"+num)
+					ui.Wake()
+					ui.RefreshStatus()
+				}
+			}
+			if btns.Pending() {
+				continue
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 
 		if chatID != "" && time.Since(lastSMSTry) > smsPollEvery {
 			lastSMSTry = time.Now()
@@ -159,28 +176,30 @@ func main() {
 					runtime.GC()
 				}
 			}
+			ui.Tick()
 		}
 
-		updates, next, err := tg.GetUpdates(offset, 0)
-		if err != nil {
-			println("tg poll:", err.Error())
-			tgFails++
-			ui.SetWiFi(tgFails < 3)
-			time.Sleep(time.Duration(tgFails) * 500 * time.Millisecond)
-			if tgFails > 10 {
-				tgFails = 5
+		if time.Since(lastNet) > 1200*time.Millisecond {
+			lastNet = time.Now()
+			updates, next, err := tg.GetUpdates(offset, 0)
+			if err != nil {
+				println("tg poll:", err.Error())
+				tgFails++
+				ui.SetWiFi(tgFails < 3)
+				if tgFails > 10 {
+					tgFails = 5
+				}
+			} else {
+				tgFails = 0
+				ui.SetWiFi(true)
+				offset = next
+				for _, u := range updates {
+					handleUpdate(tg, modem, u)
+					runtime.GC()
+				}
 			}
-			continue
+			ui.Tick()
 		}
-		tgFails = 0
-		ui.SetWiFi(true)
-		offset = next
-		for _, u := range updates {
-			handleUpdate(tg, modem, u)
-			runtime.GC()
-		}
-
-		time.Sleep(1200 * time.Millisecond)
 	}
 }
 
@@ -233,16 +252,24 @@ func handleUpdate(tg *Telegram, modem *Modem, u Update) {
 	case cmdMatch(text, "missed"):
 		_ = tg.Send(chatID, "Читаю пропущенные…")
 		list, err := modem.ListMissedCalls(20)
+		n := modem.MissedCount()
 		if err != nil {
-			_ = tg.Send(chatID, "Ошибка: "+err.Error())
+			_ = tg.Send(chatID, "Ошибка: "+err.Error()+"\nСчётчик CALLS: "+strconv.Itoa(n))
 			return
 		}
 		if len(list) == 0 {
-			_ = tg.Send(chatID, "Пропущенных звонков нет.")
+			msg := "Пропущенных в памяти модема нет."
+			if n > 0 {
+				msg += "\nСчётчик CPBS="+strconv.Itoa(n)+" (список пуст — странно)."
+			}
+			msg += "\nНовые звонки шлются сюда сами после гудков (CLIP)."
+			_ = tg.Send(chatID, msg)
 			return
 		}
 		var b strings.Builder
-		b.WriteString("Пропущенные:\n")
+		b.WriteString("Пропущенные (")
+		b.WriteString(strconv.Itoa(len(list)))
+		b.WriteString("):\n")
 		for _, c := range list {
 			b.WriteString(strconv.Itoa(c.Index))
 			b.WriteString(". ")

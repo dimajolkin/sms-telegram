@@ -27,7 +27,7 @@ func helpText() string {
 		b.WriteString(c.Help)
 		b.WriteByte('\n')
 	}
-	b.WriteString("\nВходящие SMS приходят сюда автоматически.\n")
+	b.WriteString("\nВходящие SMS и пропущенные звонки приходят сюда автоматически.\n")
 	b.WriteString("На экране: Next=inbox, OK=открыть/назад.")
 	return b.String()
 }

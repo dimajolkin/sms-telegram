@@ -124,6 +124,16 @@ func (d *Display) DrawStatus(v StatusView) {
 	_, clkW := tinyfont.LineWidth(d.font, clk)
 	d.line(d.w-18-int16(clkW)-6, 16, clk, colFg)
 	drawAlive(&d.dev, d.w-18, 10, v.Alive)
+	// сырой уровень кнопок (1=отпущена pull-up, 0=нажата на GND)
+	bn := "-"
+	bo := "-"
+	if !pinBtnNext.Get() {
+		bn = "N"
+	}
+	if !pinBtnOK.Get() {
+		bo = "O"
+	}
+	d.line(8, 34, "BTN "+bn+bo, colMuted)
 
 	op := v.Operator
 	if op == "" {
@@ -132,7 +142,7 @@ func (d *Display) DrawStatus(v StatusView) {
 	if len(op) > 22 {
 		op = op[:22]
 	}
-	d.line(8, 48, op, colMuted)
+	d.line(8, 52, op, colMuted)
 
 	sms := "?"
 	if v.SMS >= 0 {
@@ -143,10 +153,10 @@ func (d *Display) DrawStatus(v StatusView) {
 		miss = strconv.Itoa(v.Missed)
 	}
 	big := &freemono.Bold12pt7b
-	d.line(8, 68, "SMS", colMuted)
-	d.line(120, 68, "CALLS", colMuted)
-	tinyfont.WriteLine(&d.dev, big, 8, 98, sms, colFg)
-	tinyfont.WriteLine(&d.dev, big, 120, 98, miss, colFg)
+	d.line(8, 72, "SMS", colMuted)
+	d.line(120, 72, "CALLS", colMuted)
+	tinyfont.WriteLine(&d.dev, big, 8, 100, sms, colFg)
+	tinyfont.WriteLine(&d.dev, big, 120, 100, miss, colFg)
 
 	hl, hr := v.HintL, v.HintR
 	if hl == "" {

@@ -19,8 +19,13 @@ LDFLAGS = -X main.ssid=$(WIFI_SSID) \
 # 12kb: больше heap под повторный TLS handshake (16/32kb тесны на S3+WiFi).
 STACK_SIZE ?= 12kb
 
+# cores: раскомментируй или SCHEDULER=cores make flash (WiFi пока нестабилен, см. tinygo#5358)
+SCHEDULER ?=
 TINYGO_FLAGS = -target=$(TINYGO_TARGET) -size short -stack-size=$(STACK_SIZE) \
 	-ldflags="$(LDFLAGS)"
+ifneq ($(SCHEDULER),)
+TINYGO_FLAGS += -scheduler=$(SCHEDULER)
+endif
 
 firmware:
 	mkdir -p bin

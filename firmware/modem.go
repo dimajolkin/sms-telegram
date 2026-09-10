@@ -6,6 +6,7 @@ import (
 	"machine"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,12 @@ type serialBus interface {
 
 type Modem struct {
 	uart serialBus
+	mu   sync.Mutex
+
+	lineBuf    string
+	ringing    bool
+	ringNum    string
+	lastRingAt time.Time
 }
 
 func (m *Modem) Init() error {
@@ -37,6 +44,8 @@ func (m *Modem) Init() error {
 	}
 	_, _ = m.AT(`AT+CSCS="GSM"`, 3*time.Second)
 	_, _ = m.AT("AT+CNMI=2,1,0,0,0", 3*time.Second)
+	_, _ = m.AT("AT+CLIP=1", 3*time.Second) // номер на RING → +CLIP
+	_, _ = m.AT("AT+CRC=1", 3*time.Second)  // +CRING: VOICE
 	if err := m.WaitNetwork(90 * time.Second); err != nil {
 		return err
 	}
@@ -241,28 +250,29 @@ func (m *Modem) SMSCount() int {
 	return -1
 }
 
-// MissedCount — used entries in MC phonebook (без полного CPBR).
+// MissedCount — used entries в MC (missed) или RC (received), если MC нет.
 func (m *Modem) MissedCount() int {
-	if _, err := m.AT(`AT+CPBS="MC"`, 3*time.Second); err != nil {
+	for _, store := range []string{"MC", "RC"} {
+		if _, err := m.AT(`AT+CPBS="`+store+`"`, 3*time.Second); err != nil {
+			continue
+		}
+		resp, err := m.AT("AT+CPBS?", 3*time.Second)
 		_, _ = m.AT(`AT+CPBS="SM"`, 3*time.Second)
-		return -1
-	}
-	resp, err := m.AT("AT+CPBS?", 3*time.Second)
-	_, _ = m.AT(`AT+CPBS="SM"`, 3*time.Second)
-	if err != nil {
-		return -1
-	}
-	// +CPBS: "MC",used,total
-	if i := strings.Index(resp, "+CPBS:"); i >= 0 {
-		rest := resp[i+6:]
-		parts := strings.Split(rest, ",")
-		if len(parts) >= 2 {
-			n, e := strconv.Atoi(strings.TrimSpace(parts[1]))
-			if e == nil {
-				return n
+		if err != nil {
+			continue
+		}
+		if i := strings.Index(resp, "+CPBS:"); i >= 0 {
+			rest := resp[i+6:]
+			parts := strings.Split(rest, ",")
+			if len(parts) >= 2 {
+				n, e := strconv.Atoi(strings.TrimSpace(parts[1]))
+				if e == nil {
+					return n
+				}
 			}
 		}
 	}
+	_, _ = m.AT(`AT+CPBS="SM"`, 3*time.Second)
 	return -1
 }
 
@@ -277,21 +287,104 @@ type MissedCall struct {
 	Name   string
 }
 
-// ListMissedCalls — телефонная книга MC (missed calls) на модуле.
+// ListMissedCalls — MC, иначе RC.
 func (m *Modem) ListMissedCalls(limit int) ([]MissedCall, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	if _, err := m.AT(`AT+CPBS="MC"`, 3*time.Second); err != nil {
-		return nil, err
+	var lastErr error
+	for _, store := range []string{"MC", "RC"} {
+		if _, err := m.AT(`AT+CPBS="`+store+`"`, 3*time.Second); err != nil {
+			lastErr = err
+			continue
+		}
+		resp, err := m.AT("AT+CPBR=1,"+strconv.Itoa(limit), 10*time.Second)
+		_, _ = m.AT(`AT+CPBS="SM"`, 3*time.Second)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		list := parseCPBR(resp)
+		if len(list) > 0 || store == "MC" {
+			return list, nil
+		}
 	}
-	resp, err := m.AT("AT+CPBR=1,"+strconv.Itoa(limit), 10*time.Second)
-	// вернуть SMS-хранилище, чтобы не ломать CMGL
 	_, _ = m.AT(`AT+CPBS="SM"`, 3*time.Second)
-	if err != nil {
-		return nil, err
+	if lastErr != nil {
+		return nil, lastErr
 	}
-	return parseCPBR(resp), nil
+	return nil, nil
+}
+
+// PollMissedCall — после серии RING/+CLIP и тишины ~6с отдаёт номер.
+func (m *Modem) PollMissedCall() (number string, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestUART()
+	if !m.ringing {
+		return "", false
+	}
+	if time.Since(m.lastRingAt) < 6*time.Second {
+		return "", false
+	}
+	m.ringing = false
+	number = m.ringNum
+	m.ringNum = ""
+	if number == "" {
+		number = "неизвестный"
+	}
+	return number, true
+}
+
+func (m *Modem) ingestUART() {
+	for m.uart.Buffered() > 0 {
+		b, err := m.uart.ReadByte()
+		if err != nil {
+			break
+		}
+		if b == '\n' || b == '\r' {
+			if m.lineBuf != "" {
+				m.noteURC(m.lineBuf)
+				m.lineBuf = ""
+			}
+			continue
+		}
+		if len(m.lineBuf) < 160 {
+			m.lineBuf += string([]byte{b})
+		}
+	}
+}
+
+func (m *Modem) noteURC(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if line == "RING" || strings.HasPrefix(line, "+CRING:") {
+		m.ringing = true
+		m.lastRingAt = time.Now()
+		return
+	}
+	if strings.HasPrefix(line, "+CLIP:") {
+		// +CLIP: "+79001112233",145,,,,0
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "+CLIP:"))
+		q1 := strings.Index(rest, `"`)
+		if q1 < 0 {
+			m.ringing = true
+			m.lastRingAt = time.Now()
+			return
+		}
+		q2 := strings.Index(rest[q1+1:], `"`)
+		if q2 < 0 {
+			return
+		}
+		num := rest[q1+1 : q1+1+q2]
+		if num != "" {
+			m.ringNum = decodeSMSText(num)
+		}
+		m.ringing = true
+		m.lastRingAt = time.Now()
+	}
 }
 
 // +CPBR: 1,"+7900…",145,"name"
@@ -459,12 +552,14 @@ func decodeUCS2Hex(s string) (string, bool) {
 }
 
 func (m *Modem) AT(cmd string, timeout time.Duration) (string, error) {
-	m.drain()
-	m.writeRaw(cmd + "\r") // SIM800L: только CR
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestUART() // RING/+CLIP не выбрасываем
+	m.writeRaw(cmd + "\r")
 	resp, err := m.readUntilOK(timeout)
 	if err != nil && err.Error() == "AT timeout" {
 		_ = rebindModemUART(m, uartBaud)
-		m.drain()
+		m.ingestUART()
 		m.writeRaw(cmd + "\r")
 		return m.readUntilOK(timeout)
 	}
@@ -483,6 +578,12 @@ func (m *Modem) readUntilOK(timeout time.Duration) (string, error) {
 			buf.WriteByte(b)
 		}
 		s := buf.String()
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+			if line == "RING" || strings.HasPrefix(line, "+CLIP:") || strings.HasPrefix(line, "+CRING:") {
+				m.noteURC(line)
+			}
+		}
 		if strings.Contains(s, "\nOK") || strings.HasSuffix(s, "OK\r") || strings.Contains(s, "\r\nOK") {
 			return s, nil
 		}
@@ -501,9 +602,7 @@ func (m *Modem) writeRaw(s string) {
 }
 
 func (m *Modem) drain() {
-	for m.uart.Buffered() > 0 {
-		_, _ = m.uart.ReadByte()
-	}
+	m.ingestUART()
 }
 
 func parseCMGL(resp string) []SMS {
@@ -514,6 +613,7 @@ func parseCMGL(resp string) []SMS {
 		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
 		if strings.HasPrefix(line, "+CMGL:") {
 			if cur != nil {
+				cur.Text = decodeSMSText(cur.Text)
 				out = append(out, *cur)
 			}
 			cur = &SMS{}
@@ -523,7 +623,7 @@ func parseCMGL(resp string) []SMS {
 				if n, err := strconv.Atoi(idxPart); err == nil {
 					cur.Index = n
 				}
-				cur.From = strings.Trim(parts[2], `"`)
+				cur.From = decodeSMSText(strings.Trim(parts[2], `"`))
 			}
 			continue
 		}
@@ -531,14 +631,50 @@ func parseCMGL(resp string) []SMS {
 			if cur.Text == "" {
 				cur.Text = line
 			} else {
-				cur.Text += "\n" + line
+				// длинный UCS2 hex часто рвётся по строкам — склеиваем без \n
+				cur.Text += line
 			}
 		}
 	}
 	if cur != nil && cur.Text != "" {
+		cur.Text = decodeSMSText(cur.Text)
 		out = append(out, *cur)
 	}
 	return out
+}
+
+func decodeSMSText(s string) string {
+	if s == "" {
+		return s
+	}
+	compact := onlyHexDigits(s)
+	if compact == "" {
+		return s
+	}
+	if decoded, ok := decodeUCS2Hex(compact); ok {
+		return decoded
+	}
+	return s
+}
+
+// onlyHexDigits выкидывает пробелы/переводы строк; при любом другом символе — "".
+func onlyHexDigits(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'A' && c <= 'F', c >= 'a' && c <= 'f':
+			b = append(b, c)
+		case c == ' ', c == '\t', c == '\r', c == '\n':
+			continue
+		default:
+			return ""
+		}
+	}
+	if len(b) < 4 {
+		return ""
+	}
+	return string(b)
 }
 
 type atError string

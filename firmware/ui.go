@@ -20,17 +20,17 @@ type UI struct {
 	modem  *Modem
 	screen UIScreen
 
-	wifiOK      bool
-	bars        int
-	operator    string
-	smsCount    int
-	missedCount int
-	alive       int
-	dirty       bool
-	asleep      bool
-	lastPoll    time.Time
-	lastAlive   time.Time
-	lastActive  time.Time
+	wifiOK       bool
+	bars         int
+	operator     string
+	smsCount     int
+	missedCount  int
+	alive        int
+	dirty        bool
+	asleep       bool
+	lastPoll     time.Time
+	lastActive   time.Time
+	lastClockSec int
 
 	inbox    []SMS
 	inboxIdx int
@@ -39,19 +39,21 @@ type UI struct {
 func NewUI(disp *Display, btns *Buttons, modem *Modem) *UI {
 	now := time.Now()
 	return &UI{
-		disp:        disp,
-		btns:        btns,
-		modem:       modem,
-		screen:      screenStatus,
-		dirty:       true,
-		smsCount:    -1,
-		missedCount: -1,
-		lastActive:  now,
+		disp:         disp,
+		btns:         btns,
+		modem:        modem,
+		screen:       screenStatus,
+		dirty:        true,
+		smsCount:     -1,
+		missedCount:  -1,
+		lastActive:   now,
+		lastClockSec: -1,
 	}
 }
 
 func (u *UI) Wake() {
 	u.lastActive = time.Now()
+	u.lastClockSec = -1
 	if !u.asleep {
 		return
 	}
@@ -106,6 +108,33 @@ func (u *UI) loadInbox() {
 	u.dirty = true
 }
 
+func (u *UI) paint(now time.Time) {
+	switch u.screen {
+	case screenStatus:
+		clk := formatClockHHMM(now)
+		if now.Second()%2 == 1 {
+			clk = twoDig(now.Hour()) + " " + twoDig(now.Minute())
+		}
+		u.disp.DrawStatus(StatusView{
+			WiFiOK:   u.wifiOK,
+			Bars:     u.bars,
+			Operator: u.operator,
+			SMS:      u.smsCount,
+			Missed:   u.missedCount,
+			Clock:    clk,
+			Alive:    u.alive,
+			HintL:    "Inbox",
+			HintR:    "Refresh",
+		})
+	case screenInbox:
+		u.disp.DrawInbox(u.inbox, u.inboxIdx)
+	case screenDetail:
+		if len(u.inbox) > 0 && u.inboxIdx < len(u.inbox) {
+			u.disp.DrawSMSDetail(u.inbox[u.inboxIdx])
+		}
+	}
+}
+
 func (u *UI) Tick() {
 	n, o := u.btns.Poll()
 	now := time.Now()
@@ -113,7 +142,9 @@ func (u *UI) Tick() {
 	if u.asleep {
 		if n || o {
 			u.Wake()
+			u.paint(now) // сразу после клика
 			n, o = false, false
+			u.dirty = false
 		} else {
 			if u.screen == screenStatus && now.Sub(u.lastPoll) > 15*time.Second {
 				u.RefreshStatus()
@@ -129,22 +160,33 @@ func (u *UI) Tick() {
 		return
 	}
 
-	// alive pulse ~2 Hz on home screen
-	if u.screen == screenStatus && now.Sub(u.lastAlive) > 500*time.Millisecond {
-		u.alive = (u.alive + 1) & 3
-		u.lastAlive = now
-		u.dirty = true
+	if u.screen == screenStatus && !u.asleep {
+		sec := now.Second()
+		held := !u.btns.next.Get() || !u.btns.ok.Get()
+		if sec != u.lastClockSec || held {
+			u.lastClockSec = sec
+			u.alive = (u.alive + 1) & 3
+			u.dirty = true
+		}
 	}
 
 	switch u.screen {
 	case screenStatus:
 		if n {
-			u.loadInbox()
 			u.screen = screenInbox
 			u.dirty = true
+			u.paint(now) // экран сразу, SMS грузим после
+			u.dirty = false
+			u.loadInbox()
+			u.paint(now)
+			return
 		}
 		if o {
+			u.paint(now)
 			u.RefreshStatus()
+			u.paint(now)
+			u.dirty = false
+			return
 		}
 		if now.Sub(u.lastPoll) > 15*time.Second {
 			u.RefreshStatus()
@@ -177,29 +219,20 @@ func (u *UI) Tick() {
 		return
 	}
 	u.dirty = false
-	switch u.screen {
-	case screenStatus:
-		clk := formatClockHHMM(now)
-		// blink colon
-		if u.alive%2 == 1 {
-			clk = twoDig(now.Hour()) + " " + twoDig(now.Minute())
+	u.paint(now)
+}
+
+// Run — цикл UI (второе ядро при -scheduler=cores).
+func (u *UI) Run() {
+	for {
+		u.Tick()
+		if u.btns.Pending() {
+			continue
 		}
-		u.disp.DrawStatus(StatusView{
-			WiFiOK:   u.wifiOK,
-			Bars:     u.bars,
-			Operator: u.operator,
-			SMS:      u.smsCount,
-			Missed:   u.missedCount,
-			Clock:    clk,
-			Alive:    u.alive,
-			HintL:    "Inbox",
-			HintR:    "Refresh",
-		})
-	case screenInbox:
-		u.disp.DrawInbox(u.inbox, u.inboxIdx)
-	case screenDetail:
-		if len(u.inbox) > 0 && u.inboxIdx < len(u.inbox) {
-			u.disp.DrawSMSDetail(u.inbox[u.inboxIdx])
+		if u.asleep {
+			time.Sleep(20 * time.Millisecond)
+		} else {
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
