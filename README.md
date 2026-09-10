@@ -97,14 +97,16 @@ Hole sizes at a glance: Ø3.4 = M3 clearance, Ø4.4 = heat-set insert body (knur
 
 | File | What |
 |------|------|
-| [`hardware/enclosure/stl/enclosure-shell.stl`](hardware/enclosure/stl/enclosure-shell.stl) | Upper shell — flip 180° in the slicer so the front face lies on the bed |
-| [`hardware/enclosure/stl/enclosure-cover.stl`](hardware/enclosure/stl/enclosure-cover.stl) | Bottom cover — print as exported (counterbores down) |
-| [`hardware/enclosure/stl/button-cap-x2.stl`](hardware/enclosure/stl/button-cap-x2.stl) | Button cap, print two, as exported (flange down) |
+| [`hardware/enclosure/stl/plate-100x160.stl`](hardware/enclosure/stl/plate-100x160.stl) | Everything in one job for a 100 × 160 mm bed: shell + cover + 2 caps, already oriented (96 × 94 mm footprint) |
+| [`hardware/enclosure/stl/enclosure-shell.stl`](hardware/enclosure/stl/enclosure-shell.stl) | Upper shell, print-oriented: front face on the bed, no supports |
+| [`hardware/enclosure/stl/enclosure-cover.stl`](hardware/enclosure/stl/enclosure-cover.stl) | Bottom cover, print-oriented: counterbores on the bed |
+| [`hardware/enclosure/stl/button-cap-x2.stl`](hardware/enclosure/stl/button-cap-x2.stl) | Button cap, flange on the bed — print two |
 | [`hardware/enclosure/sms-telegram-enclosure.step`](hardware/enclosure/sms-telegram-enclosure.step) | Full assembly incl. component placeholders, inserts and screws |
 | [`hardware/enclosure/sms-telegram-enclosure.f3d`](hardware/enclosure/sms-telegram-enclosure.f3d) | Fusion 360 source with the parametric timeline |
 
 #### Printing (bed 100 × 160 mm is enough for both parts side by side)
 
+- All STLs are in mm with the part sitting on z = 0 in its print orientation — load and slice, no rotation needed. Suggested: 0.2 mm layers, 3 perimeters, 20 % infill, PETG or PLA.
 - Shell: top face on the bed, no supports — pillars, pocket ribs, SIM ribs and cap finger are vertical walls, the top-edge chamfer replaces the old R1.5 fillet that would have left a 0.75 mm step at layer 2. The USB U-notch has no bridge.
 - Cover: flat on the bed, all fixtures are 1.2–4 mm vertical features; the Ø1.8 pegs are the smallest detail (0.4 nozzle, ≥ 3 perimeters). The 0.85 mm hook lip prints as a short overhang.
 - Caps: flange down, PETG/PLA; 0.2 mm layer keeps the Ø3.7 socket dimension.
