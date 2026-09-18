@@ -55,14 +55,16 @@ Handheld body, landscape 1.14″ window (matches the firmware's 240×135 `Rotati
 | Packing (shell removed) | ![Enclosure packing](docs/hardware/enclosure-packing.png) |
 | Packing, top-down | ![Enclosure packing top](docs/hardware/enclosure-packing-top.png) |
 | Cover fixtures | ![Cover fixtures](docs/hardware/enclosure-cover-fixtures.png) |
-| Shell inside (pocket ribs, USB U-notch, flanged caps) | ![Shell inside](docs/hardware/enclosure-shell-inside.png) |
+| Shell inside (window lip, pocket ribs, USB U-notch) | ![Shell inside](docs/hardware/enclosure-shell-inside.png) |
 | Bottom (recessed M3 heads) | ![Bottom](docs/hardware/enclosure-bottom-iso.png) |
+
+Fit is checked against the manufacturers' 3D models, not against boxes: `vendor/ER-TFTM1.14-1.step` (EastRising display) and `vendor/XIAO-ESP32S3-v2.step` (Seeed). Both sit in the Fusion assembly, so every support surface below is measured off real geometry.
 
 ```text
  y=78 ┌──────[USB-C]──────┐   XIAO ESP32-S3 under the display, USB out the top wall
-      │ (M3)          (M3)│   pillars Ø8 at (±17.8, 32/72), insert hole Ø4.4 × 6
+      │ (M3)          (M3)│   pillars Ø8 at (±17.8, 32/72), insert hole Ø3.4 × 6
       │  ┌─────────────┐  │
-      │  │ ST7789 1.14″│  │   module 32×26 lies flat, glass flush in 24.5×13.8 window
+      │  │ ST7789 1.14″│  │   PCB 31.4×28 on posts at z 12, screen 24.9×14.9 under the lip
       │  └─────────────┘  │
       │ (M3) (N)  (O) (M3)│   6×6 tact switches (H=7) on a 20×8 strip, flanged caps
       │  ┌────────┐ ┌──┐  │
@@ -71,46 +73,54 @@ Handheld body, landscape 1.14″ window (matches the firmware's 240×135 `Rotati
  y=0  └───────────────────┘
 ```
 
-Shell: 2 mm walls, R6 corners, 0.8 mm chamfer on the top edge. Cover: 2 mm plate with four Ø8 bosses rising to z 3.4 under the pillars; each has a Ø3.4 through hole and a Ø6.2 × 1.9 counterbore from below, so the Ø5.7 × 1.65 button head ends 0.25 mm inside the plate and a 1.5 mm floor remains under the pillar. Screw stack: head 0.25–1.9, thread 1.9–7.9, insert 3.4–8.4 (M3 × 5 insert, ≥ 4.5 mm engagement). Every placeholder plus the inserts and screws was checked against the cavity bounds and pairwise interference in Fusion (25 bodies, 0 hits). Model lives in the open Fusion session as an unsaved parametric design (`ow/oh/od/wall/pillar_od/insert_hole/cover_hole` user parameters).
+#### Display window with a lip (no gap around the glass)
 
-Hole sizes at a glance: Ø3.4 = M3 clearance, Ø4.4 = heat-set insert body (knurled OD ≈ 4.6, nominal core 4.0 — measure your kit and adjust `insert_hole`), Ø6.2 = head counterbore.
+The top plate is 2 mm (z 14–16) and the window is split in two levels: a pocket 32.4 × 18 at z 14–15 that swallows the 32 × 17.6 display glass, and a viewing opening 29.4 × 15.5 at z 15–16. The remaining 1 mm ring overhangs the glass edge by 1.3 mm in X and 1.07 mm in Y, so nothing is visible through the seam, with 0.2 mm of air above the glass for tolerance. The active area (24.9 × 14.9, offset 1.9 mm towards −X on this module) clears the opening by 0.3 mm on every side.
+
+Shell: 2 mm walls, R6 corners, 0.8 mm chamfer on the top edge. Cover: 2 mm plate with four Ø8 bosses rising to z 3.4 under the pillars; each has a Ø3.4 through hole and a Ø6.2 × 1.9 counterbore from below, so the Ø5.7 × 1.65 button head ends 0.25 mm inside the plate and a 1.5 mm floor remains under the pillar. Screw stack: head 0.25–1.9, thread 1.9–7.9, insert 3.4–8.4 (M3 × 5 insert, ≥ 4.5 mm engagement).
+
+Heat-set inserts melt into the **shell** pillars from below: the pilot hole is Ø3.4 × 6 against a Ø4.4 insert, i.e. 0.5 mm of interference per side, and the pillar keeps a 1.8 mm wall around the insert. If your kit sinks too hard, open the hole to Ø4.0–4.2 (`NEW_HOLE_D` in the insert-hole script) — that is the conventional 0.1–0.2 mm per side.
+
+Hole sizes at a glance: Ø3.4 = M3 clearance in the cover **and** the insert pilot hole in the shell, Ø6.2 = head counterbore.
 
 #### Fixtures per node (no glue, everything is captured between shell and cover)
 
 | Node | Shell side | Cover side | Play |
 |------|-----------|------------|------|
 | Buttons (6×6 tact, 4-pin, from the inventory kit, H = 7 mm) | Ø6.2 holes at (±6.5, 32); caps have a Ø8 × 1 flange under the wall, Ø5.6 stem 0.8 mm proud, Ø3.7 socket for the plunger — a cap cannot fall out once the shell is on | 2 posts 4×4 (z 2–4.3) with Ø1.8 pegs into Ø2 holes in the strip at (±8.5, 32) | 0.1 mm pre-travel |
-| Display 32×26 module | 4 L-shaped corner ribs (1.2 mm, z 9.3–14) pocket the PCB with 0.3 mm clearance; glass sits in the window | 3 posts 3.5×3.5 to z 9.4 at (±14, 40.5) and (0, 56) | 0.1 mm |
-| XIAO ESP32-S3 | USB-C U-notch (9.2 wide, open to the shell's bottom edge) so the board slides in with the cover | rails under the PCB (|x| 9.3–10.6, z 2–3.5), side stops (|x| 10.8–12), hook lip on the (0, 56) post over the PCB edge, filler tab closing the notch below the connector | 0.3 mm side |
+| Display ER-TFTM1.14-1 (PCB 31.4×28) | L-shaped corner ribs (1.2 mm, z 9.3–14) pocket the module; the 1 mm window lip overlaps the glass edge | 2 posts 3.5×3.5 at (±14, 40.5) and one 8×5.5 post at (0, 50.5–56), all to z 12 — PCB rests with 0 gap | 0.1 mm |
+| XIAO ESP32-S3 (PCB 17.8×21) | USB-C U-notch (9.2 wide, open to the shell's bottom edge) so the board slides in with the cover | rails under the textolite (\|x\| 7.7–9.0, z 2–3.5), side stops (\|x\| 9.2–10.4, z→5.5), back stop at y 56 — the same post that carries the display, so plugging the cable pushes the board into it | 0.3 mm side |
 | SIM800L | 2 hold-down ribs (y 8–9.2 and 19–20.2, z 9.7–14) | corner stops 1.2 mm (z 2–5) on three sides + a bar at y 25.8–26.6 | 0.2–0.5 mm |
 | Bulk cap Ø10 × 20 | finger x 8–18, y 12–14, z 12.7–14 | two U-saddles (R5.2, z 2–7.5) at y 4.5–6.5 and 19.5–21.5 | 0.2 mm |
 | Wi-Fi flex | — | adhesive, lies flat at y 42.5–53.5 between the display posts | — |
 
 #### Assembly / disassembly
 
-1. Heat-set four M3 brass inserts into the shell pillars (Ø4.4 hole, 6 mm deep; insert flush with the pillar face).
-2. Drop both caps into the shell from inside (flange down). Solder wires to the display (remove the straight header), lay it face-down into the pocket ribs.
-3. On the cover: stick the flex antenna, press the button strip onto the pegs (trim switch pins ≤ 2 mm), seat the SIM800L into its stops and the capacitor into the saddles, slide the XIAO onto the rails under the hook lip, USB-C towards the notch.
-4. Close the cover — the posts lift the display/strip against the shell, the filler tab closes the U-notch under the connector — and fit four M3 × 6 button-head screws from below; they end up flush. Disassembly is the reverse; no glue anywhere.
+1. Heat-set four M3 brass inserts into the shell pillars (Ø3.4 hole, 6 mm deep; insert flush with the pillar face).
+2. Drop both caps into the shell from inside (flange down). Solder wires to the display (remove the straight header), lay it face-down into the window pocket — the lip catches the glass edge.
+3. On the cover: stick the flex antenna, press the button strip onto the pegs (trim switch pins ≤ 2 mm), seat the SIM800L into its stops and the capacitor into the saddles, slide the XIAO onto the rails until its rear edge meets the y 56 stop, USB-C towards the notch.
+4. Close the cover — the posts lift the display against the shell, the filler tab closes the U-notch under the connector — and fit four M3 × 6 button-head screws from below; they end up flush. Disassembly is the reverse; no glue anywhere.
 
 #### Files
 
 | File | What |
 |------|------|
-| [`hardware/enclosure/stl/plate-100x160.stl`](hardware/enclosure/stl/plate-100x160.stl) | Everything in one job for a 100 × 160 mm bed: shell + cover + 2 caps, already oriented (96 × 94 mm footprint) |
+| [`hardware/enclosure/stl/plate-100x160.stl`](hardware/enclosure/stl/plate-100x160.stl) | Everything in one job for a 100 × 160 mm bed: shell + cover + 2 caps, already oriented (96 × 90 mm footprint) |
 | [`hardware/enclosure/stl/enclosure-shell.stl`](hardware/enclosure/stl/enclosure-shell.stl) | Upper shell, print-oriented: front face on the bed, no supports |
 | [`hardware/enclosure/stl/enclosure-cover.stl`](hardware/enclosure/stl/enclosure-cover.stl) | Bottom cover, print-oriented: counterbores on the bed |
 | [`hardware/enclosure/stl/button-cap-x2.stl`](hardware/enclosure/stl/button-cap-x2.stl) | Button cap, flange on the bed — print two |
 | [`hardware/enclosure/sms-telegram-enclosure.step`](hardware/enclosure/sms-telegram-enclosure.step) | Full assembly incl. component placeholders, inserts and screws |
 | [`hardware/enclosure/sms-telegram-enclosure.f3d`](hardware/enclosure/sms-telegram-enclosure.f3d) | Fusion 360 source with the parametric timeline |
+| [`hardware/enclosure/vendor/`](hardware/enclosure/vendor) | Manufacturer STEP models used for the fit check: EastRising display, Seeed XIAO |
+| [`hardware/enclosure/scripts/place_parts.py`](hardware/enclosure/scripts/place_parts.py) | Re-seats both vendor models on their supports in Fusion (positions of inserted components are not stored in the parametric timeline, so any geometry edit drops them back to the origin) |
 
 #### Printing (bed 100 × 160 mm is enough for both parts side by side)
 
-- All STLs are in mm with the part sitting on z = 0 in its print orientation — load and slice, no rotation needed. Suggested: 0.2 mm layers, 3 perimeters, 20 % infill, PETG or PLA.
-- Shell: top face on the bed, no supports — pillars, pocket ribs, SIM ribs and cap finger are vertical walls, the top-edge chamfer replaces the old R1.5 fillet that would have left a 0.75 mm step at layer 2. The USB U-notch has no bridge.
-- Cover: flat on the bed, all fixtures are 1.2–4 mm vertical features; the Ø1.8 pegs are the smallest detail (0.4 nozzle, ≥ 3 perimeters). The 0.85 mm hook lip prints as a short overhang.
+- All STLs are in mm, at the origin, with the part sitting on z = 0 in its print orientation — load and slice, no rotation needed. Suggested: 0.2 mm layers, 3 perimeters, 20 % infill, PETG or PLA. The combined plate is 96 × 90 mm.
+- Shell: top face on the bed, no supports — pillars, pocket ribs, SIM ribs and cap finger are vertical walls, the top-edge chamfer replaces the old R1.5 fillet that would have left a 0.75 mm step at layer 2. The USB U-notch has no bridge. The 1 mm window lip prints as the first layers, so the display opening comes out crisp.
+- Cover: flat on the bed, all fixtures are 1.2–4 mm vertical features; the Ø1.8 pegs are the smallest detail (0.4 nozzle, ≥ 3 perimeters).
 - Caps: flange down, PETG/PLA; 0.2 mm layer keeps the Ø3.7 socket dimension.
-- Pillar wall around the Ø4.4 insert hole is 1.8 mm — fine for heat-set M3; the counterbores print as clean 1.9 mm pockets on the bed side.
+- Pillar wall around the insert is 1.8 mm — fine for heat-set M3; the counterbores print as clean 1.9 mm pockets on the bed side.
 
 Open points:
 
