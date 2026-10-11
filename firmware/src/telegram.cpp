@@ -13,32 +13,39 @@ String Telegram::apiURL(const char *method) const {
   return String("https://api.telegram.org/bot") + token_ + "/" + method;
 }
 
+static WiFiClientSecure g_client;
+static HTTPClient g_http;
+
 bool Telegram::doRequest(const char *method, const char *url,
                          const char *payload, const char *content_type,
                          String *body_out, int *code_out, int max_body) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient https;
-  https.setTimeout(45000);
-  if (!https.begin(client, url)) {
+  g_client.setInsecure();
+  g_http.setReuse(true);
+  g_http.setConnectTimeout(10000);
+  g_http.setTimeout(8000);
+  g_http.setUserAgent("sms-telegram/2.0");
+  uint32_t t0 = millis();
+  if (!g_http.begin(g_client, url)) {
+    g_client.stop();
     Serial.println("tg begin failed");
     return false;
   }
-  https.setUserAgent("sms-telegram/2.0");
   int code;
   if (payload && content_type) {
-    https.addHeader("Content-Type", content_type);
-    code = https.POST((uint8_t *)payload, strlen(payload));
+    g_http.addHeader("Content-Type", content_type);
+    code = g_http.POST((uint8_t *)payload, strlen(payload));
   } else if (strcmp(method, "POST") == 0) {
-    code = https.POST("");
+    code = g_http.POST("");
   } else {
-    code = https.GET();
+    code = g_http.GET();
   }
   if (code_out) *code_out = code;
-  String body = https.getString();
+  String body = g_http.getString();
   if ((int)body.length() > max_body) body = body.substring(0, max_body);
   if (body_out) *body_out = body;
-  https.end();
+  g_http.end();
+  if (code <= 0) g_client.stop();
+  Serial.printf("tg %s %d %ums\n", method, code, (unsigned)(millis() - t0));
   return code > 0;
 }
 

@@ -63,6 +63,37 @@ static void enqueue_text(const char *text) {
   enqueue_tg(ev);
 }
 
+static void forward_sms(const SMS *msgs, int n) {
+  for (int i = 0; i < n; i++) {
+    TgEvent ev{};
+    ev.type = TG_EVT_SMS;
+    ev.sms_n = (uint8_t)msgs[i].index_n;
+    if (ev.sms_n > SMS_PARTS_MAX) ev.sms_n = SMS_PARTS_MAX;
+    if (ev.sms_n <= 0) {
+      ev.sms_n = 1;
+      ev.sms_indices[0] = msgs[i].index;
+    } else {
+      for (uint8_t k = 0; k < ev.sms_n; k++)
+        ev.sms_indices[k] = msgs[i].indices[k];
+    }
+    ev.sms_index = ev.sms_indices[0];
+    strncpy(ev.from, msgs[i].from, sizeof(ev.from) - 1);
+    ev.from[sizeof(ev.from) - 1] = 0;
+    strncpy(ev.text, msgs[i].text, sizeof(ev.text) - 1);
+    ev.text[sizeof(ev.text) - 1] = 0;
+    if (xQueueSend(g_to_tg, &ev, pdMS_TO_TICKS(500)) == pdTRUE)
+      status_tg_queue_add(&g_status, 1);
+    else
+      g_modem.releaseSMS(msgs[i]);
+    g_ui.wake();
+  }
+}
+
+static bool isFetchSms(const String &text) {
+  if (cmdMatch(text, "getsms") || cmdMatch(text, "get_sms")) return true;
+  return text == "/get-sms" || text.startsWith("/get-sms@");
+}
+
 static bool tg_send_and_ack(const char *dest, const char *text) {
   bool ok = g_tg.send(dest, text);
   if (ok) status_tg_queue_add(&g_status, -1);
@@ -185,6 +216,11 @@ static void handle_update(const TgUpdate &u) {
     cmd.type = MODEM_CMD_LIST_MISSED;
     xQueueSend(g_to_modem, &cmd, pdMS_TO_TICKS(500));
     enqueue_text("Читаю пропущенные…");
+  } else if (isFetchSms(text)) {
+    ModemCmd cmd{};
+    cmd.type = MODEM_CMD_FETCH_SMS;
+    if (xQueueSend(g_to_modem, &cmd, pdMS_TO_TICKS(500)) != pdTRUE)
+      enqueue_text("Модем занят, повтори /get-sms");
   } else if (text.startsWith("/sms ")) {
     String num, body;
     if (!parseSMSCmd(text, &num, &body)) {
@@ -239,7 +275,7 @@ static void telegram_task(void *arg) {
   if (chat[0]) g_tg.send(chat, "ESP online. /help");
 
   for (;;) {
-    TgEvent ev;
+    static TgEvent ev;
     while (xQueueReceive(g_to_tg, &ev, 0) == pdTRUE) {
       chat_get(chat, sizeof(chat));
       if (!chat[0] && ev.type != TG_EVT_TEXT) {
@@ -250,12 +286,20 @@ static void telegram_task(void *arg) {
       const char *dest = chat;
       bool ok = false;
       if (ev.type == TG_EVT_SMS) {
-        char msg[520];
+        static char msg[SMS_TEXT_MAX + 48];
         snprintf(msg, sizeof(msg), "SMS from %s\n\n%s", ev.from, ev.text);
         ok = tg_send_and_ack(dest, msg);
-        if (ok && ev.sms_index >= 0) {
-          g_modem.deleteSMS(ev.sms_index);  // шлюз: не храним на SIM
-        } else if (!ok) {
+        if (ok) {
+          if (ev.sms_n > 0) {
+            uint8_t n = ev.sms_n;
+            if (n > SMS_PARTS_MAX) n = SMS_PARTS_MAX;
+            for (uint8_t k = 0; k < n; k++) {
+              if (ev.sms_indices[k] >= 0) g_modem.deleteSMS(ev.sms_indices[k]);
+            }
+          } else if (ev.sms_index >= 0) {
+            g_modem.deleteSMS(ev.sms_index);
+          }
+        } else {
           xQueueSend(g_to_tg, &ev, 0);
           break;
         }
@@ -281,7 +325,7 @@ static void telegram_task(void *arg) {
       TgUpdate ups[2];
       int n = 0;
       int64_t next = offset;
-      if (g_tg.getUpdates(offset, 1, ups, &n, 2, &next)) {
+      if (g_tg.getUpdates(offset, 0, ups, &n, 2, &next)) {
         fails = 0;
         status_set_wifi(&g_status, true);
         char ip[16];
@@ -359,6 +403,15 @@ static void modem_task(void *arg) {
         g_modem.operatorName(op, sizeof(op));
         status_update_modem(&g_status, bars, op, g_modem.smsCount(),
                             g_modem.missedCount());
+      } else if (cmd.type == MODEM_CMD_FETCH_SMS) {
+        static SMS fetched[4];
+        int n = g_modem.readUnreadSMS(fetched, 4, true);
+        if (n > 0)
+          forward_sms(fetched, n);
+        else if (n < 0)
+          enqueue_text("Не прочитал SMS");
+        else
+          enqueue_text("Новых SMS нет.");
       }
     }
 
@@ -373,21 +426,11 @@ static void modem_task(void *arg) {
       g_ui.wake();
     }
 
-    if (millis() - last_sms > SMS_POLL_MS) {
+    if (g_modem.smsWaiting() || millis() - last_sms > SMS_POLL_MS) {
       last_sms = millis();
-      SMS msgs[5];
-      int n = g_modem.readUnreadSMS(msgs, 5);
-      if (n > 0) {
-        for (int i = 0; i < n; i++) {
-          TgEvent ev{};
-          ev.type = TG_EVT_SMS;
-          ev.sms_index = msgs[i].index;
-          strncpy(ev.from, msgs[i].from, sizeof(ev.from) - 1);
-          strncpy(ev.text, msgs[i].text, sizeof(ev.text) - 1);
-          enqueue_tg(ev);
-          g_ui.wake();
-        }
-      }
+      static SMS msgs[4];
+      int n = g_modem.readUnreadSMS(msgs, 4);
+      if (n > 0) forward_sms(msgs, n);
     }
 
     if (millis() - last_bal_poll > BALANCE_POLL_MS) {
@@ -454,7 +497,7 @@ void setup() {
   Serial.println("--- stage2 OK wifi ---");
 
   Serial.println("--- stage3 UART ---");
-  ModemUART.setRxBufferSize(1024);
+  ModemUART.setRxBufferSize(2048);
   ModemUART.begin(UART_BAUD, SERIAL_8N1, PIN_UART_RX, PIN_UART_TX);
   g_modem.begin(&ModemUART, g_modem_mu);
   for (;;) {

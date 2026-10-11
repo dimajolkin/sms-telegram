@@ -18,6 +18,7 @@
 
 static const uint32_t UART_BAUD = 9600;
 static const uint32_t SMS_POLL_MS = 3000;
+static const uint32_t SMS_CONCAT_TIMEOUT_MS = 20000;
 static const uint32_t TG_POLL_MS = 1200;
 static const uint32_t SCREEN_TIMEOUT_MS = 30000;
 static const uint32_t STATUS_REFRESH_MS = 15000;

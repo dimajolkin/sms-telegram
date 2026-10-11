@@ -20,7 +20,7 @@ Uses **native ESP Wi‑Fi + mbedTLS** and **two FreeRTOS cores**. The device is 
 
 | Feature | Behavior |
 |---------|----------|
-| Incoming SMS | Queued → Telegram (UCS-2 decoded), then **deleted from SIM** |
+| Incoming SMS | Long SMS reassembled (3GPP UDH), then decoded → Telegram, **deleted from SIM** |
 | Missed calls | `AT+CLIP` → Telegram after ring silence |
 | Outgoing SMS | `/sms +7900… text` |
 | USSD / balance | `/balance` (`*100#`), `/ussd *code#` |

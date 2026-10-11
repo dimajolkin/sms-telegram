@@ -70,6 +70,14 @@ int csqToBars(int csq) {
   return 0;
 }
 
+static void commitSms(SMS *s) {
+  if (s->index_n <= 0) {
+    s->index_n = 1;
+    s->indices[0] = s->index;
+  }
+  decodeSMSText(s->text, s->text, sizeof(s->text));
+}
+
 int parseCMGL(const char *resp, SMS *out, int max_n) {
   if (!resp || !out || max_n <= 0) return 0;
   int n = 0;
@@ -90,7 +98,7 @@ int parseCMGL(const char *resp, SMS *out, int max_n) {
 
     if (strncmp(line, "+CMGL:", 6) == 0) {
       if (have) {
-        decodeSMSText(cur.text, cur.text, sizeof(cur.text));
+        commitSms(&cur);
         out[n++] = cur;
         if (n >= max_n) break;
       }
@@ -128,7 +136,7 @@ int parseCMGL(const char *resp, SMS *out, int max_n) {
     while (*p == '\r' || *p == '\n') p++;
   }
   if (have && cur.text[0] && n < max_n) {
-    decodeSMSText(cur.text, cur.text, sizeof(cur.text));
+    commitSms(&cur);
     out[n++] = cur;
   }
   return n;
@@ -184,6 +192,8 @@ int parseCPBR(const char *resp, MissedCall *out, int max_n) {
 void Modem::begin(HardwareSerial *uart, SemaphoreHandle_t mu) {
   uart_ = uart;
   mu_ = mu;
+  queued_n_ = 0;
+  memset(waits_, 0, sizeof(waits_));
 }
 
 void Modem::lock() {
@@ -246,7 +256,9 @@ void Modem::noteURC(const char *line) {
     decodeSMSText(raw, ring_num_, sizeof(ring_num_));
     ringing_ = true;
     last_ring_ms_ = millis();
+    return;
   }
+  if (strncmp(line, "+CMTI:", 6) == 0) sms_waiting_ = true;
 }
 
 void Modem::drain() { ingestUART(); }
@@ -255,6 +267,10 @@ bool Modem::readUntilOK(char *resp, size_t resp_len, uint32_t timeout_ms) {
   if (!resp || resp_len == 0) return false;
   resp[0] = 0;
   size_t used = 0;
+  char tail[8];
+  int tn = 0;
+  tail[0] = 0;
+  bool full = false;
   uint32_t deadline = millis() + timeout_ms;
   while ((int32_t)(deadline - millis()) > 0) {
     while (uart_->available()) {
@@ -263,7 +279,16 @@ bool Modem::readUntilOK(char *resp, size_t resp_len, uint32_t timeout_ms) {
       if (used + 1 < resp_len) {
         resp[used++] = (char)b;
         resp[used] = 0;
+      } else {
+        full = true;
       }
+      if (tn < 7) {
+        tail[tn++] = (char)b;
+      } else {
+        memmove(tail, tail + 1, 6);
+        tail[6] = (char)b;
+      }
+      tail[tn < 7 ? tn : 7] = 0;
     }
     // URC inside response
     char *line = resp;
@@ -276,19 +301,30 @@ bool Modem::readUntilOK(char *resp, size_t resp_len, uint32_t timeout_ms) {
         memcpy(tmp, line, L);
         tmp[L] = 0;
         if (strcmp(tmp, "RING") == 0 || strncmp(tmp, "+CLIP:", 6) == 0 ||
-            strncmp(tmp, "+CRING:", 7) == 0)
+            strncmp(tmp, "+CRING:", 7) == 0 || strncmp(tmp, "+CMTI:", 6) == 0)
           noteURC(tmp);
         line = eol + 1;
       } else
         break;
     }
-    if (strstr(resp, "\nOK") || strstr(resp, "\r\nOK") ||
-        (used >= 2 && strcmp(resp + used - 2, "OK") == 0))
+    const char *endchk = full ? tail : resp;
+    size_t elen = strlen(endchk);
+    if (strstr(endchk, "\nOK") || strstr(endchk, "\rOK") ||
+        (elen >= 2 && strcmp(endchk + elen - 2, "OK") == 0))
       return true;
-    if (strstr(resp, "ERROR")) return false;
+    if (strstr(endchk, "ERROR")) return false;
     delay(5);
   }
   return false;
+}
+
+bool Modem::atHold(const char *cmd, char *resp, size_t resp_len,
+                   uint32_t timeout_ms) {
+  ingestUART();
+  char full[96];
+  snprintf(full, sizeof(full), "%s\r", cmd);
+  writeRaw(full);
+  return readUntilOK(resp, resp_len, timeout_ms);
 }
 
 bool Modem::syncAT(int tries) {
@@ -324,11 +360,7 @@ bool Modem::waitNetwork(uint32_t timeout_ms) {
 bool Modem::at(const char *cmd, char *resp, size_t resp_len,
                uint32_t timeout_ms) {
   lock();
-  ingestUART();
-  char full[96];
-  snprintf(full, sizeof(full), "%s\r", cmd);
-  writeRaw(full);
-  bool ok = readUntilOK(resp, resp_len, timeout_ms);
+  bool ok = atHold(cmd, resp, resp_len, timeout_ms);
   unlock();
   return ok;
 }
@@ -377,23 +409,112 @@ bool Modem::init() {
   return selfTest();
 }
 
-int Modem::readUnreadSMS(SMS *out, int max_n) {
-  char resp[2048];
-  if (!at("AT+CMGL=\"REC UNREAD\"", resp, sizeof(resp), 10000)) return -1;
-  return parseCMGL(resp, out, max_n);
+static char g_cmgl_buf[8192];
+
+void Modem::forgetQueuedUnlocked(int index) {
+  int w = 0;
+  for (int i = 0; i < queued_n_; i++) {
+    if (queued_[i] != index) queued_[w++] = queued_[i];
+  }
+  queued_n_ = w;
+}
+
+void Modem::rememberQueuedUnlocked(const SMS *msgs, int n) {
+  if (!msgs || n <= 0) return;
+  for (int i = 0; i < n; i++) {
+    int cnt = msgs[i].index_n;
+    if (cnt <= 0) {
+      if (msgs[i].index < 0 || queued_n_ >= QUEUED_MAX) continue;
+      queued_[queued_n_++] = msgs[i].index;
+      continue;
+    }
+    if (cnt > SMS_PARTS_MAX) cnt = SMS_PARTS_MAX;
+    for (int k = 0; k < cnt; k++) {
+      int idx = msgs[i].indices[k];
+      bool have = false;
+      for (int q = 0; q < queued_n_; q++)
+        if (queued_[q] == idx) have = true;
+      if (!have && queued_n_ < QUEUED_MAX) queued_[queued_n_++] = idx;
+    }
+  }
+}
+
+void Modem::releaseSMS(const SMS &s) {
+  lock();
+  int n = s.index_n;
+  if (n <= 0) {
+    if (s.index >= 0) forgetQueuedUnlocked(s.index);
+  } else {
+    if (n > SMS_PARTS_MAX) n = SMS_PARTS_MAX;
+    for (int i = 0; i < n; i++) forgetQueuedUnlocked(s.indices[i]);
+  }
+  unlock();
+}
+
+bool Modem::smsWaiting() {
+  lock();
+  ingestUART();
+  bool waiting = sms_waiting_;
+  unlock();
+  return waiting;
+}
+
+int Modem::readPduList(const char *stat, bool forward, SMS *out, int max_n,
+                     bool immediate) {
+  if (!out || max_n <= 0 || !stat) return 0;
+  lock();
+  sms_waiting_ = false;
+  char tmp[80];
+  bool pdu_mode = atHold("AT+CMGF=0", tmp, sizeof(tmp), 3000);
+  char cmd[40];
+  bool ok = false;
+  if (pdu_mode) {
+    snprintf(cmd, sizeof(cmd), "AT+CMGL=%s", stat);
+    ok = atHold(cmd, g_cmgl_buf, sizeof(g_cmgl_buf), 8000);
+    atHold("AT+CMGF=1", tmp, sizeof(tmp), 3000);
+  } else {
+    const char *which = (stat && stat[0] == '4') ? "ALL" : "REC UNREAD";
+    snprintf(cmd, sizeof(cmd), "AT+CMGL=\"%s\"", which);
+    atHold("AT+CMGF=1", tmp, sizeof(tmp), 3000);
+    ok = atHold(cmd, g_cmgl_buf, sizeof(g_cmgl_buf), 8000);
+  }
+  if (!ok) {
+    unlock();
+    return -1;
+  }
+  int n = pduCollect(g_cmgl_buf, out, max_n, forward ? waits_ : nullptr,
+                     forward ? CONCAT_WAIT_MAX : 0, forward ? queued_ : nullptr,
+                     forward ? queued_n_ : 0, millis(), SMS_CONCAT_TIMEOUT_MS,
+                     !forward || immediate);
+  if (forward && n > 0) {
+    rememberQueuedUnlocked(out, n);
+    for (int i = 0; i < n; i++) {
+      if (out[i].index_n > 1)
+        Serial.printf("sms assembled %s (%d parts)\n", out[i].from,
+                      out[i].index_n);
+    }
+  }
+  unlock();
+  return n;
+}
+
+int Modem::readUnreadSMS(SMS *out, int max_n, bool immediate) {
+  return readPduList("0", true, out, max_n, immediate);
 }
 
 int Modem::listSMS(SMS *out, int max_n) {
-  char resp[3072];
-  if (!at("AT+CMGL=\"ALL\"", resp, sizeof(resp), 15000)) return -1;
-  return parseCMGL(resp, out, max_n);
+  return readPduList("4", false, out, max_n, false);
 }
 
 bool Modem::deleteSMS(int index) {
   char cmd[32];
   snprintf(cmd, sizeof(cmd), "AT+CMGD=%d", index);
   char resp[64];
-  return at(cmd, resp, sizeof(resp), 5000);
+  lock();
+  forgetQueuedUnlocked(index);
+  bool ok = atHold(cmd, resp, sizeof(resp), 5000);
+  unlock();
+  return ok;
 }
 
 bool Modem::signalQuality(int *csq, int *bars) {

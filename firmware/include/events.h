@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pdu.h"
+
 #include <stdint.h>
 
 enum TgEventType : uint8_t {
@@ -10,9 +12,11 @@ enum TgEventType : uint8_t {
 
 struct TgEvent {
   TgEventType type;
-  int sms_index;  // для TG_EVT_SMS — удалить после отправки; -1 иначе
+  int sms_index;
+  int sms_indices[SMS_PARTS_MAX];
+  uint8_t sms_n;
   char from[32];
-  char text[480];
+  char text[SMS_TEXT_MAX];
 };
 
 enum ModemCmdType : uint8_t {
@@ -20,6 +24,7 @@ enum ModemCmdType : uint8_t {
   MODEM_CMD_USSD,
   MODEM_CMD_LIST_MISSED,
   MODEM_CMD_REFRESH_STATUS,
+  MODEM_CMD_FETCH_SMS,
 };
 
 struct ModemCmd {
