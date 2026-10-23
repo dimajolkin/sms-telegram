@@ -405,6 +405,7 @@ bool Modem::init() {
   at("AT+CNMI=2,1,0,0,0", resp, sizeof(resp), 3000);
   at("AT+CLIP=1", resp, sizeof(resp), 3000);
   at("AT+CRC=1", resp, sizeof(resp), 3000);
+  at("AT+CVHU=0", resp, sizeof(resp), 3000);
   if (!waitNetwork(90000)) return false;
   return selfTest();
 }
@@ -717,4 +718,203 @@ bool Modem::ussd(const char *code, char *out, size_t out_len) {
   }
   unlock();
   return false;
+}
+
+enum LineKind : uint8_t {
+  LINE_NONE = 0,
+  LINE_OK,
+  LINE_ERROR,
+  LINE_DROPPED,
+  LINE_BUSY,
+  LINE_NO_ANSWER,
+  LINE_NO_DIALTONE,
+  LINE_SMS,
+};
+
+static int clccStat(const char *line) {
+  if (strncmp(line, "+CLCC:", 6) != 0) return -1;
+  const char *p = strchr(line, ',');
+  if (!p) return -1;
+  p = strchr(p + 1, ',');
+  if (!p) return -1;
+  return atoi(p + 1);
+}
+
+static LineKind classifyModemLine(const char *line) {
+  while (*line == ' ' || *line == '\t') line++;
+  if (!*line) return LINE_NONE;
+  if (strcmp(line, "OK") == 0) return LINE_OK;
+  if (strstr(line, "ERROR")) return LINE_ERROR;
+  if (strcmp(line, "NO CARRIER") == 0) return LINE_DROPPED;
+  if (strcmp(line, "BUSY") == 0) return LINE_BUSY;
+  if (strcmp(line, "NO ANSWER") == 0) return LINE_NO_ANSWER;
+  if (strcmp(line, "NO DIALTONE") == 0) return LINE_NO_DIALTONE;
+  if (strncmp(line, "+CMTI:", 6) == 0) return LINE_SMS;
+  return LINE_NONE;
+}
+
+static bool takeLine(char *buf, size_t *used, char *line, size_t line_len) {
+  size_t i = 0;
+  while (i < *used && buf[i] != '\n' && buf[i] != '\r') i++;
+  if (i == *used) return false;
+  size_t n = i;
+  if (n >= line_len) n = line_len - 1;
+  memcpy(line, buf, n);
+  line[n] = 0;
+  while (n && (line[n - 1] == ' ' || line[n - 1] == '\t')) line[--n] = 0;
+  i++;
+  while (i < *used && (buf[i] == '\n' || buf[i] == '\r')) i++;
+  memmove(buf, buf + i, *used - i);
+  *used -= i;
+  buf[*used] = 0;
+  return true;
+}
+
+static void hangupVoice(HardwareSerial *uart) {
+  if (!uart) return;
+  const char *cmds[] = {"AT+CHUP\r", "ATH\r"};
+  for (auto c : cmds) {
+    uart->print(c);
+    char b[128];
+    size_t n = 0;
+    b[0] = 0;
+    uint32_t deadline = millis() + 3000;
+    while ((int32_t)(deadline - millis()) > 0) {
+      while (uart->available() && n + 1 < sizeof(b)) {
+        b[n++] = (char)uart->read();
+        b[n] = 0;
+      }
+      if (strstr(b, "OK") || strstr(b, "NO CARRIER") || strstr(b, "ERROR")) break;
+      delay(10);
+    }
+  }
+}
+
+bool Modem::callAndWaitDrop(const char *number, CallDropStatus *status,
+                            uint32_t *elapsed_ms, void (*on_ringing)()) {
+  if (status) *status = CALL_FAIL;
+  if (elapsed_ms) *elapsed_ms = 0;
+  if (!uart_ || !number || !number[0]) return false;
+
+  lock();
+  drain();
+  char buf[384];
+  size_t used = 0;
+  buf[0] = 0;
+  if (line_buf_.length()) {
+    size_t n = line_buf_.length();
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, line_buf_.c_str(), n);
+    used = n;
+    buf[used] = 0;
+    line_buf_ = "";
+  }
+
+  char cmd[80];
+  snprintf(cmd, sizeof(cmd), "ATD%s;\r", number);
+  writeRaw(cmd);
+  Serial.printf("call dial %s\n", number);
+
+  uint32_t t0 = millis();
+  uint32_t deadline = t0 + CALL_DROP_WAIT_MS;
+  bool saw_ok = false;
+  bool done = false;
+  bool rang = false;
+  bool clcc_pending = false;
+  uint32_t next_clcc = 0;
+  uint32_t clcc_sent = 0;
+  CallDropStatus st = CALL_FAIL;
+
+  while (!done && (int32_t)(deadline - millis()) > 0) {
+    while (uart_->available() && used + 1 < sizeof(buf)) {
+      int b = uart_->read();
+      if (b < 0) break;
+      buf[used++] = (char)b;
+      buf[used] = 0;
+    }
+    char line[120];
+    while (takeLine(buf, &used, line, sizeof(line))) {
+      if (strncmp(line, "+CLCC:", 6) == 0) {
+        int stat = clccStat(line);
+        Serial.printf("call clcc %d\n", stat);
+        if (stat == 3 && !rang) {
+          rang = true;
+          Serial.println("call ringing");
+          if (on_ringing) on_ringing();
+        }
+        continue;
+      }
+      if (strcmp(line, "MO RING") == 0 && !rang) {
+        rang = true;
+        Serial.println("call ringing");
+        if (on_ringing) on_ringing();
+        continue;
+      }
+      LineKind k = classifyModemLine(line);
+      if (k == LINE_SMS) {
+        noteURC(line);
+        continue;
+      }
+      if (k == LINE_OK) {
+        if (clcc_pending)
+          clcc_pending = false;
+        else
+          saw_ok = true;
+        continue;
+      }
+      if (k == LINE_ERROR) {
+        if (clcc_pending) {
+          clcc_pending = false;
+          continue;
+        }
+        if (!saw_ok) {
+          st = CALL_FAIL;
+          done = true;
+          break;
+        }
+        continue;
+      }
+      if (k == LINE_DROPPED) {
+        st = CALL_DROPPED;
+        done = true;
+        break;
+      }
+      if (k == LINE_BUSY) {
+        st = CALL_BUSY;
+        done = true;
+        break;
+      }
+      if (k == LINE_NO_ANSWER) {
+        st = CALL_NO_ANSWER;
+        done = true;
+        break;
+      }
+      if (k == LINE_NO_DIALTONE) {
+        st = CALL_NO_DIALTONE;
+        done = true;
+        break;
+      }
+    }
+    if (clcc_pending && (int32_t)(millis() - clcc_sent) > 2000) clcc_pending = false;
+    if (!done && saw_ok && !rang && !clcc_pending &&
+        (next_clcc == 0 || (int32_t)(millis() - next_clcc) >= 0)) {
+      writeRaw("AT+CLCC\r");
+      clcc_pending = true;
+      clcc_sent = millis();
+      next_clcc = clcc_sent + 700;
+    }
+    if (!done) delay(20);
+  }
+
+  uint32_t elapsed = millis() - t0;
+  if (!done) {
+    Serial.println("call timeout, hangup");
+    hangupVoice(uart_);
+    st = saw_ok ? CALL_TIMEOUT : CALL_FAIL;
+  }
+  Serial.printf("call result %u in %u ms\n", (unsigned)st, (unsigned)elapsed);
+  unlock();
+  if (status) *status = st;
+  if (elapsed_ms) *elapsed_ms = elapsed;
+  return st != CALL_FAIL;
 }

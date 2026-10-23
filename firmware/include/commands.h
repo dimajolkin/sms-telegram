@@ -14,3 +14,4 @@ extern const int BOT_COMMANDS_N;
 String helpText();
 bool cmdMatch(const String &text, const char *name);
 bool parseSMSCmd(const String &text, String *number, String *body);
+bool parsePhone(const String &text, char *out, size_t out_len);

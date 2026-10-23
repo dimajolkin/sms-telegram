@@ -13,6 +13,15 @@ struct MissedCall {
   char name[32];
 };
 
+enum CallDropStatus : uint8_t {
+  CALL_DROPPED = 0,
+  CALL_BUSY,
+  CALL_NO_ANSWER,
+  CALL_NO_DIALTONE,
+  CALL_FAIL,
+  CALL_TIMEOUT,
+};
+
 class Modem {
  public:
   void begin(HardwareSerial *uart, SemaphoreHandle_t mu);
@@ -27,6 +36,8 @@ class Modem {
   void releaseSMS(const SMS &s);
   bool sendSMS(const char *number, const char *text);
   bool ussd(const char *code, char *out, size_t out_len);
+  bool callAndWaitDrop(const char *number, CallDropStatus *status,
+                       uint32_t *elapsed_ms, void (*on_ringing)());
 
   bool signalQuality(int *csq, int *bars);
   void operatorName(char *out, size_t out_len);

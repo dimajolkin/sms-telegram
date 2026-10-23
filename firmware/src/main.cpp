@@ -94,6 +94,50 @@ static bool isFetchSms(const String &text) {
   return text == "/get-sms" || text.startsWith("/get-sms@");
 }
 
+static bool g_wait_phone = false;
+static uint32_t g_wait_phone_ms = 0;
+
+static bool callCommandText(const String &text, String *arg) {
+  *arg = "";
+  if (text == "/call" || text.startsWith("/call ") || text.startsWith("/call@")) {
+    int sp = text.indexOf(' ');
+    if (sp > 0) {
+      *arg = text.substring(sp + 1);
+      arg->trim();
+    }
+    return true;
+  }
+  const char *phrases[] = {"звонок сброс", "Звонок сброс", "Звонок Сброс"};
+  for (auto ph : phrases) {
+    size_t n = strlen(ph);
+    if ((size_t)text.length() < n) continue;
+    if (strncmp(text.c_str(), ph, n) != 0) continue;
+    if ((size_t)text.length() == n) return true;
+    if (text[n] == ' ') {
+      *arg = text.substring(n + 1);
+      arg->trim();
+      return true;
+    }
+  }
+  return false;
+}
+
+static void onCallRinging() { enqueue_text("Пошли гудки"); }
+
+static void startCall(const char *number) {
+  ModemCmd cmd{};
+  cmd.type = MODEM_CMD_CALL_DROP;
+  strncpy(cmd.arg1, number, sizeof(cmd.arg1) - 1);
+  cmd.arg1[sizeof(cmd.arg1) - 1] = 0;
+  if (xQueueSend(g_to_modem, &cmd, pdMS_TO_TICKS(500)) != pdTRUE) {
+    enqueue_text("Модем занят, повтори /call");
+    return;
+  }
+  char msg[96];
+  snprintf(msg, sizeof(msg), "Звоню на %s, жду сброс…", number);
+  enqueue_text(msg);
+}
+
 static bool tg_send_and_ack(const char *dest, const char *text) {
   bool ok = g_tg.send(dest, text);
   if (ok) status_tg_queue_add(&g_status, -1);
@@ -202,6 +246,40 @@ static void handle_update(const TgUpdate &u) {
     return;
   }
   if (!bound[0]) chat_set(from);
+
+  if (g_wait_phone && millis() - g_wait_phone_ms > 180000) g_wait_phone = false;
+
+  String call_arg;
+  bool is_call = callCommandText(text, &call_arg);
+  if (g_wait_phone && !is_call && !text.startsWith("/")) {
+    char num[24];
+    if (parsePhone(text, num, sizeof(num))) {
+      g_wait_phone = false;
+      startCall(num);
+    } else {
+      enqueue_text("Это не номер. Пришли +7 800 777-70-79 или /call ещё раз.");
+    }
+    return;
+  }
+  if (g_wait_phone) g_wait_phone = false;
+
+  if (is_call) {
+    if (call_arg.length()) {
+      char num[24];
+      if (!parsePhone(call_arg, num, sizeof(num))) {
+        g_wait_phone = true;
+        g_wait_phone_ms = millis();
+        enqueue_text("Не разобрал номер. Пришли его ещё раз, например +7 800 777-70-79");
+        return;
+      }
+      startCall(num);
+    } else {
+      g_wait_phone = true;
+      g_wait_phone_ms = millis();
+      enqueue_text("Куда позвонить? Пришли номер, например +7 800 777-70-79");
+    }
+    return;
+  }
 
   if (cmdMatch(text, "help")) {
     enqueue_text(helpText().c_str());
@@ -412,6 +490,35 @@ static void modem_task(void *arg) {
           enqueue_text("Не прочитал SMS");
         else
           enqueue_text("Новых SMS нет.");
+      } else if (cmd.type == MODEM_CMD_CALL_DROP) {
+        CallDropStatus st = CALL_FAIL;
+        uint32_t elapsed = 0;
+        g_modem.callAndWaitDrop(cmd.arg1, &st, &elapsed, onCallRinging);
+        unsigned sec = (unsigned)((elapsed + 500) / 1000);
+        char msg[160];
+        switch (st) {
+          case CALL_DROPPED:
+            snprintf(msg, sizeof(msg), "Сбросили через %u с\n%s", sec, cmd.arg1);
+            break;
+          case CALL_BUSY:
+            snprintf(msg, sizeof(msg), "Сбросили (занято) через %u с\n%s", sec,
+                     cmd.arg1);
+            break;
+          case CALL_NO_ANSWER:
+            snprintf(msg, sizeof(msg), "Не ответили (%u с)\n%s", sec, cmd.arg1);
+            break;
+          case CALL_NO_DIALTONE:
+            snprintf(msg, sizeof(msg), "Нет гудка\n%s", cmd.arg1);
+            break;
+          case CALL_TIMEOUT:
+            snprintf(msg, sizeof(msg),
+                     "Не сбросили за %u с, положил трубку\n%s", sec, cmd.arg1);
+            break;
+          default:
+            snprintf(msg, sizeof(msg), "Не удалось позвонить на %s", cmd.arg1);
+            break;
+        }
+        enqueue_text(msg);
       }
     }
 

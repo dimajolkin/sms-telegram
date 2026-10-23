@@ -25,6 +25,7 @@ enum ModemCmdType : uint8_t {
   MODEM_CMD_LIST_MISSED,
   MODEM_CMD_REFRESH_STATUS,
   MODEM_CMD_FETCH_SMS,
+  MODEM_CMD_CALL_DROP,
 };
 
 struct ModemCmd {

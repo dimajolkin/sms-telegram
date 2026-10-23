@@ -24,6 +24,7 @@ Uses **native ESP Wi‑Fi + mbedTLS** and **two FreeRTOS cores**. The device is 
 | Missed calls | `AT+CLIP` → Telegram after ring silence |
 | Outgoing SMS | `/sms +7900… text` |
 | USSD / balance | `/balance` (`*100#`), `/ussd *code#` |
+| Call drop | `/call` or `звонок сброс` — dial and wait until the remote side hangs up |
 | Weekly balance | Every **7 days** (`*100#`); Telegram warning if balance **&lt; 100** |
 | Missed list | `/missed` (modem MC/RC phonebook) |
 | Status UI | Signal, Wi‑Fi, clock, **QUEUE** (pending TG sends), CALLS, **IP**, softkeys |
@@ -81,7 +82,13 @@ Open the bot, send `/start` or `/help`. Incoming SMS and missed calls appear aut
 /missed
 /sms +79001112233 hello
 /ussd *100#
+/call
++7 800 777-70-79
+/call +7 800 777-70-79
+звонок сброс
 ```
+
+`/call` (or the text `звонок сброс`) asks for a phone number, then dials it. Spaces, hyphens, and parentheses are fine (`+7 800 777-70-79` is sent as `+78007777079`). The bot sends **Пошли гудки** when the remote side starts ringing, and waits until that side drops the call — usually a few seconds, at most **30 s**. If nothing drops the call in that time, the modem hangs up itself. A number can be sent in the same message: `/call +7 800 777-70-79`. Any other command cancels the number prompt.
 
 ## Project layout
 

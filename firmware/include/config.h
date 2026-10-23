@@ -23,6 +23,8 @@ static const uint32_t TG_POLL_MS = 1200;
 static const uint32_t SCREEN_TIMEOUT_MS = 30000;
 static const uint32_t STATUS_REFRESH_MS = 15000;
 static const uint32_t MISSED_SILENCE_MS = 6000;
+// Исходящий звонок для авторизации: ждём, пока сбросят с той стороны.
+static const uint32_t CALL_DROP_WAIT_MS = 30000;
 
 // Еженедельная проверка баланса (*100#)
 static const time_t BALANCE_CHECK_INTERVAL_SEC = 7L * 24 * 3600;
