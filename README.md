@@ -88,7 +88,7 @@ Open the bot, send `/start` or `/help`. Incoming SMS and missed calls appear aut
 звонок сброс
 ```
 
-`/call` (or the text `звонок сброс`) asks for a phone number, then dials it. Spaces, hyphens, and parentheses are fine (`+7 800 777-70-79` is sent as `+78007777079`). The bot sends **Пошли гудки** when the remote side starts ringing, and waits until that side drops the call — usually a few seconds, at most **30 s**. If nothing drops the call in that time, the modem hangs up itself. A number can be sent in the same message: `/call +7 800 777-70-79`. Any other command cancels the number prompt.
+`/call` (or the text `звонок сброс`) asks for a phone number, then dials it. Spaces, hyphens, and parentheses are fine (`+7 800 777-70-79` is sent as `+78007777079`). The bot sends **Пошли гудки** when the remote side starts ringing, and waits until that side drops the call — usually a few seconds, at most **1 min**. If nothing drops the call in that time, the modem hangs up itself. A number can be sent in the same message: `/call +7 800 777-70-79`. Any other command cancels the number prompt.
 
 ## Project layout
 
