@@ -4,8 +4,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+enum NetState : uint8_t { NET_OK = 0, NET_NO_WIFI = 1, NET_NO_INET = 2 };
+
 struct SharedStatus {
   bool wifi_ok;
+  uint8_t net;
   int bars;
   char oper[24];
   int sms_count;      // остаток на SIM (для отладки)
@@ -17,6 +20,8 @@ struct SharedStatus {
 
 void status_init(SharedStatus *s);
 void status_set_wifi(SharedStatus *s, bool ok);
+void status_set_net(SharedStatus *s, uint8_t net);
+uint8_t status_net(SharedStatus *s);
 void status_set_ip(SharedStatus *s, const char *ip);
 void status_tg_queue_add(SharedStatus *s, int delta);
 int status_tg_queue_get(SharedStatus *s);

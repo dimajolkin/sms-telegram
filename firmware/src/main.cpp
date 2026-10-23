@@ -16,6 +16,7 @@
 #include "events.h"
 #include "modem.h"
 #include "pins.h"
+#include "sms_store.h"
 #include "status.h"
 #include "telegram.h"
 #include "ui.h"
@@ -63,26 +64,112 @@ static void enqueue_text(const char *text) {
   enqueue_tg(ev);
 }
 
-static void forward_sms(const SMS *msgs, int n) {
+static void noteSimSpace() {
+  int used = 0, total = 0;
+  if (!g_modem.smsStorage(&used, &total)) return;
+  int free_n = total - used;
+  if (free_n < 0) free_n = 0;
+  int level = 0;
+  if (free_n == 0)
+    level = 2;
+  else if (free_n <= SIM_FREE_WARN)
+    level = 1;
+
+  static int last = 0;
+  static uint32_t sent_ms = 0;
+  uint32_t now = millis();
+  bool changed = level != last;
+  bool repeat = level > 0 && sent_ms != 0 && now - sent_ms >= SIM_WARN_REPEAT_MS;
+  if (!changed && !repeat) return;
+  if (level == 0 && last == 0) return;
+
+  char msg[160];
+  if (level == 0)
+    snprintf(msg, sizeof(msg), "На SIM снова есть место: %d/%d", used, total);
+  else if (level == 2)
+    snprintf(msg, sizeof(msg),
+             "SIM заполнена: %d/%d. Новые SMS модем не примет.", used, total);
+  else
+    snprintf(msg, sizeof(msg),
+             "Мало места на SIM: %d/%d. Скоро новые SMS не сохранятся.", used,
+             total);
+  enqueue_text(msg);
+  last = level;
+  sent_ms = now;
+}
+
+static bool clearSimSms(const SMS &s) {
+  int n = s.index_n;
+  bool ok = true;
+  if (n <= 0) {
+    if (s.index >= 0 && !g_modem.deleteSMS(s.index)) ok = false;
+    return ok;
+  }
+  if (n > SMS_PARTS_MAX) n = SMS_PARTS_MAX;
+  for (int k = 0; k < n; k++) {
+    if (s.indices[k] >= 0 && !g_modem.deleteSMS(s.indices[k])) ok = false;
+  }
+  return ok;
+}
+
+static void fillSmsEvent(TgEvent *ev, const SMS &s) {
+  ev->type = TG_EVT_SMS;
+  ev->sms_n = (uint8_t)s.index_n;
+  if (ev->sms_n > SMS_PARTS_MAX) ev->sms_n = SMS_PARTS_MAX;
+  if (ev->sms_n <= 0) {
+    ev->sms_n = 1;
+    ev->sms_indices[0] = s.index;
+  } else {
+    for (uint8_t k = 0; k < ev->sms_n; k++) ev->sms_indices[k] = s.indices[k];
+  }
+  ev->sms_index = ev->sms_indices[0];
+  strncpy(ev->from, s.from, sizeof(ev->from) - 1);
+  ev->from[sizeof(ev->from) - 1] = 0;
+  strncpy(ev->text, s.text, sizeof(ev->text) - 1);
+  ev->text[sizeof(ev->text) - 1] = 0;
+}
+
+static void pumpFlashSms() {
+  UBaseType_t space = uxQueueSpacesAvailable(g_to_tg);
+  if (space == 0) return;
+  int room = space > 4 ? 4 : (int)space;
+  uint32_t ids[4];
+  int n = smsStoreClaim(ids, room);
   for (int i = 0; i < n; i++) {
     TgEvent ev{};
     ev.type = TG_EVT_SMS;
-    ev.sms_n = (uint8_t)msgs[i].index_n;
-    if (ev.sms_n > SMS_PARTS_MAX) ev.sms_n = SMS_PARTS_MAX;
-    if (ev.sms_n <= 0) {
-      ev.sms_n = 1;
-      ev.sms_indices[0] = msgs[i].index;
-    } else {
-      for (uint8_t k = 0; k < ev.sms_n; k++)
-        ev.sms_indices[k] = msgs[i].indices[k];
+    ev.flash_id = ids[i];
+    ev.sms_index = -1;
+    if (!smsStoreLoad(ids[i], ev.from, sizeof(ev.from), ev.text, sizeof(ev.text))) {
+      smsStoreRemove(ids[i]);
+      continue;
     }
-    ev.sms_index = ev.sms_indices[0];
-    strncpy(ev.from, msgs[i].from, sizeof(ev.from) - 1);
-    ev.from[sizeof(ev.from) - 1] = 0;
-    strncpy(ev.text, msgs[i].text, sizeof(ev.text) - 1);
-    ev.text[sizeof(ev.text) - 1] = 0;
+    if (xQueueSend(g_to_tg, &ev, 0) != pdTRUE) {
+      smsStoreUnclaim(ids[i]);
+      break;
+    }
+    status_tg_queue_add(&g_status, 1);
+  }
+}
+
+static void forward_sms(const SMS *msgs, int n) {
+  for (int i = 0; i < n; i++) {
+    TgEvent ev{};
+    fillSmsEvent(&ev, msgs[i]);
+    uint32_t id = smsStoreSave(msgs[i].from, msgs[i].text);
+    if (id && clearSimSms(msgs[i])) {
+      ev.flash_id = id;
+      ev.sms_n = 0;
+      ev.sms_index = -1;
+      Serial.printf("sms -> flash %u, sim cleared\n", id);
+    } else if (id) {
+      smsStoreRemove(id);
+      id = 0;
+    }
     if (xQueueSend(g_to_tg, &ev, pdMS_TO_TICKS(500)) == pdTRUE)
       status_tg_queue_add(&g_status, 1);
+    else if (id)
+      smsStoreUnclaim(id);
     else
       g_modem.releaseSMS(msgs[i]);
     g_ui.wake();
@@ -353,6 +440,7 @@ static void telegram_task(void *arg) {
   if (chat[0]) g_tg.send(chat, "ESP online. /help");
 
   for (;;) {
+    pumpFlashSms();
     static TgEvent ev;
     while (xQueueReceive(g_to_tg, &ev, 0) == pdTRUE) {
       chat_get(chat, sizeof(chat));
@@ -368,7 +456,9 @@ static void telegram_task(void *arg) {
         snprintf(msg, sizeof(msg), "SMS from %s\n\n%s", ev.from, ev.text);
         ok = tg_send_and_ack(dest, msg);
         if (ok) {
-          if (ev.sms_n > 0) {
+          if (ev.flash_id) {
+            smsStoreRemove(ev.flash_id);
+          } else if (ev.sms_n > 0) {
             uint8_t n = ev.sms_n;
             if (n > SMS_PARTS_MAX) n = SMS_PARTS_MAX;
             for (uint8_t k = 0; k < n; k++) {
@@ -378,7 +468,8 @@ static void telegram_task(void *arg) {
             g_modem.deleteSMS(ev.sms_index);
           }
         } else {
-          xQueueSend(g_to_tg, &ev, 0);
+          if (xQueueSend(g_to_tg, &ev, 0) != pdTRUE && ev.flash_id)
+            smsStoreUnclaim(ev.flash_id);
           break;
         }
       } else if (ev.type == TG_EVT_MISSED) {
@@ -406,6 +497,7 @@ static void telegram_task(void *arg) {
       if (g_tg.getUpdates(offset, 0, ups, &n, 2, &next)) {
         fails = 0;
         status_set_wifi(&g_status, true);
+        status_set_net(&g_status, NET_OK);
         char ip[16];
         wifiLocalIP(ip, sizeof(ip));
         status_set_ip(&g_status, ip);
@@ -413,7 +505,13 @@ static void telegram_task(void *arg) {
         for (int i = 0; i < n; i++) handle_update(ups[i]);
       } else {
         fails++;
-        status_set_wifi(&g_status, fails < 3);
+        if (!wifiUp()) {
+          status_set_wifi(&g_status, false);
+          status_set_net(&g_status, NET_NO_WIFI);
+        } else {
+          status_set_wifi(&g_status, fails < 3);
+          if (fails >= 3) status_set_net(&g_status, NET_NO_INET);
+        }
         Serial.println("tg poll fail");
       }
     }
@@ -537,12 +635,19 @@ static void modem_task(void *arg) {
       last_sms = millis();
       static SMS msgs[4];
       int n = g_modem.readUnreadSMS(msgs, 4);
+      if (n != 0) Serial.printf("sms poll n=%d\n", n);
       if (n > 0) forward_sms(msgs, n);
     }
 
     if (millis() - last_bal_poll > BALANCE_POLL_MS) {
       last_bal_poll = millis();
       maybeCheckBalance();
+    }
+
+    static uint32_t last_sim_space = 0;
+    if (millis() - last_sim_space > STATUS_REFRESH_MS) {
+      last_sim_space = millis();
+      noteSimSpace();
     }
 
     vTaskDelay(pdMS_TO_TICKS(30));
@@ -627,13 +732,14 @@ void setup() {
   else
     Serial.println("tg menu fail");
 
+  smsStoreBegin();
   g_btns.begin();
   g_ui.begin(&g_disp, &g_btns, &g_modem, &g_status);
   g_ui.refreshStatus();
   g_ui.tick();
 
-  xTaskCreatePinnedToCore(telegram_task, "tg", 12288, nullptr, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(modem_task, "modem", 8192, nullptr, 1, nullptr, 1);
+  xTaskCreatePinnedToCore(telegram_task, "tg", 14336, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(modem_task, "modem", 12288, nullptr, 1, nullptr, 1);
   xTaskCreatePinnedToCore(ui_task, "ui", 6144, nullptr, 2, nullptr, 1);
 
   Serial.println("--- stage4 OK ready ---");

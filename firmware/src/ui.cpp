@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "config.h"
 #include "pins.h"
+#include "wifi_ntp.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -101,6 +102,34 @@ void UI::tick() {
   bool n = false, o = false;
   btns_->poll(&n, &o);
   uint32_t now = millis();
+
+  uint8_t show = NET_OK;
+  if (!wifiUp())
+    show = NET_NO_WIFI;
+  else if (status_net(status_) == NET_NO_INET)
+    show = NET_NO_INET;
+
+  if (show != NET_OK) {
+    if (asleep_) wake();
+    last_active_ms_ = now;
+    if (show != net_ || now - last_blink_ms_ >= 500) {
+      if (now - last_blink_ms_ >= 500) {
+        last_blink_ms_ = now;
+        alert_on_ = !alert_on_;
+      }
+      net_ = show;
+      dirty_ = true;
+    }
+    if (!dirty_) return;
+    dirty_ = false;
+    disp_->drawAlert(show == NET_NO_WIFI ? "NO WI-FI" : "NO INTERNET", alert_on_);
+    return;
+  }
+  if (net_ != NET_OK) {
+    net_ = NET_OK;
+    alert_on_ = false;
+    dirty_ = true;
+  }
 
   if (asleep_) {
     if (n || o) {

@@ -42,6 +42,7 @@ class Modem {
   bool signalQuality(int *csq, int *bars);
   void operatorName(char *out, size_t out_len);
   int smsCount();
+  bool smsStorage(int *used, int *total);
   int missedCount();
   int listMissedCalls(MissedCall *out, int max_n);
 

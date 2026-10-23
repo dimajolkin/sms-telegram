@@ -1,6 +1,8 @@
 #include "modem.h"
 #include "config.h"
 #include "pins.h"
+
+static char g_cmgl_buf[8192];
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -258,7 +260,10 @@ void Modem::noteURC(const char *line) {
     last_ring_ms_ = millis();
     return;
   }
-  if (strncmp(line, "+CMTI:", 6) == 0) sms_waiting_ = true;
+  if (strncmp(line, "+CMTI:", 6) == 0) {
+    sms_waiting_ = true;
+    Serial.printf("sms urc %s\n", line);
+  }
 }
 
 void Modem::drain() { ingestUART(); }
@@ -410,8 +415,6 @@ bool Modem::init() {
   return selfTest();
 }
 
-static char g_cmgl_buf[8192];
-
 void Modem::forgetQueuedUnlocked(int index) {
   int w = 0;
   for (int i = 0; i < queued_n_; i++) {
@@ -474,12 +477,27 @@ int Modem::readPduList(const char *stat, bool forward, SMS *out, int max_n,
     ok = atHold(cmd, g_cmgl_buf, sizeof(g_cmgl_buf), 8000);
     atHold("AT+CMGF=1", tmp, sizeof(tmp), 3000);
   } else {
-    const char *which = (stat && stat[0] == '4') ? "ALL" : "REC UNREAD";
+    const char *which = "REC UNREAD";
+    if (stat && stat[0] == '4')
+      which = "ALL";
+    else if (stat && stat[0] == '1')
+      which = "REC READ";
     snprintf(cmd, sizeof(cmd), "AT+CMGL=\"%s\"", which);
     atHold("AT+CMGF=1", tmp, sizeof(tmp), 3000);
     ok = atHold(cmd, g_cmgl_buf, sizeof(g_cmgl_buf), 8000);
   }
+  if (!ok && strstr(g_cmgl_buf, "+CMGL:")) {
+    Serial.printf("sms cmgl partial stat=%s bytes=%u\n", stat,
+                  (unsigned)strlen(g_cmgl_buf));
+    uint32_t drain_until = millis() + 2000;
+    while ((int32_t)(drain_until - millis()) > 0) {
+      while (uart_ && uart_->available()) uart_->read();
+      delay(10);
+    }
+    ok = true;
+  }
   if (!ok) {
+    Serial.printf("sms cmgl fail stat=%s\n", stat);
     unlock();
     return -1;
   }
@@ -500,7 +518,11 @@ int Modem::readPduList(const char *stat, bool forward, SMS *out, int max_n,
 }
 
 int Modem::readUnreadSMS(SMS *out, int max_n, bool immediate) {
-  return readPduList("0", true, out, max_n, immediate);
+  int n = readPduList("0", true, out, max_n, immediate);
+  if (n > 0) return n;
+  int read = readPduList("1", true, out, max_n, immediate);
+  if (n < 0 && read < 0) return -1;
+  return read < 0 ? 0 : read;
 }
 
 int Modem::listSMS(SMS *out, int max_n) {
@@ -512,9 +534,10 @@ bool Modem::deleteSMS(int index) {
   snprintf(cmd, sizeof(cmd), "AT+CMGD=%d", index);
   char resp[64];
   lock();
-  forgetQueuedUnlocked(index);
   bool ok = atHold(cmd, resp, sizeof(resp), 5000);
+  if (ok) forgetQueuedUnlocked(index);
   unlock();
+  Serial.printf("sms delete %d %s\n", index, ok ? "ok" : "fail");
   return ok;
 }
 
@@ -559,15 +582,27 @@ void Modem::operatorName(char *out, size_t out_len) {
   strncpy(out, "no net", out_len - 1);
 }
 
-int Modem::smsCount() {
+bool Modem::smsStorage(int *used, int *total) {
   char resp[160];
-  if (!at("AT+CPMS?", resp, sizeof(resp), 3000)) return -1;
+  if (!at("AT+CPMS?", resp, sizeof(resp), 3000)) return false;
   const char *p = strstr(resp, "+CPMS:");
-  if (!p) return -1;
-  // +CPMS: "SM",used,total,...
+  if (!p) return false;
   const char *c = strchr(p, ',');
-  if (!c) return -1;
-  return atoi(c + 1);
+  if (!c) return false;
+  int u = atoi(c + 1);
+  const char *c2 = strchr(c + 1, ',');
+  if (!c2) return false;
+  int t = atoi(c2 + 1);
+  if (t <= 0) return false;
+  if (used) *used = u;
+  if (total) *total = t;
+  return true;
+}
+
+int Modem::smsCount() {
+  int used = -1;
+  if (!smsStorage(&used, nullptr)) return -1;
+  return used;
 }
 
 int Modem::missedCount() {

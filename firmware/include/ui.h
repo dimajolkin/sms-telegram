@@ -34,6 +34,9 @@ class UI {
   uint32_t last_poll_ms_ = 0;
   uint32_t last_active_ms_ = 0;
   int last_clock_sec_ = -1;
+  uint8_t net_ = NET_OK;
+  bool alert_on_ = false;
+  uint32_t last_blink_ms_ = 0;
 
   SMS inbox_[8];
   int inbox_n_ = 0;

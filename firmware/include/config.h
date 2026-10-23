@@ -22,6 +22,8 @@ static const uint32_t SMS_CONCAT_TIMEOUT_MS = 20000;
 static const uint32_t TG_POLL_MS = 1200;
 static const uint32_t SCREEN_TIMEOUT_MS = 30000;
 static const uint32_t STATUS_REFRESH_MS = 15000;
+static const int SIM_FREE_WARN = 3;
+static const uint32_t SIM_WARN_REPEAT_MS = 10UL * 60 * 1000;
 static const uint32_t MISSED_SILENCE_MS = 6000;
 // Исходящий звонок для авторизации: ждём, пока сбросят с той стороны.
 static const uint32_t CALL_DROP_WAIT_MS = 60000;

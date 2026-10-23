@@ -25,6 +25,8 @@ bool wifiConnect() {
   return false;
 }
 
+bool wifiUp() { return WiFi.status() == WL_CONNECTED; }
+
 void wifiLocalIP(char *out, size_t out_len) {
   if (!out || out_len == 0) return;
   out[0] = 0;

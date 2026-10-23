@@ -25,6 +25,7 @@ class Display {
   void sleep();
   void wake();
   void drawBoot(const char *msg);
+  void drawAlert(const char *msg, bool on);
   void drawStatus(const StatusView &v);
   void drawInbox(const SMS *list, int n, int idx);
   void drawSMSDetail(const SMS &s);

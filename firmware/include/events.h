@@ -15,6 +15,7 @@ struct TgEvent {
   int sms_index;
   int sms_indices[SMS_PARTS_MAX];
   uint8_t sms_n;
+  uint32_t flash_id;
   char from[32];
   char text[SMS_TEXT_MAX];
 };

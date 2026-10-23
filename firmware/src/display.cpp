@@ -72,6 +72,21 @@ void Display::drawAlive(int16_t x, int16_t y, int frame) {
   if (frame % 2 == 0) tft_->fillRect(x + 3, y + 3, 4, 4, c);
 }
 
+void Display::drawAlert(const char *msg, bool on) {
+  uint16_t bg = on ? 0xF800 : 0x0000;
+  uint16_t fg = on ? 0xFFFF : 0xF800;
+  tft_->fillScreen(bg);
+  const char *text = msg && msg[0] ? msg : "ERROR";
+  tft_->setTextSize(2);
+  tft_->setTextColor(fg, bg);
+  int16_t tw = (int16_t)(12 * strlen(text));
+  int16_t x = (w_ - tw) / 2;
+  if (x < 4) x = 4;
+  tft_->setCursor(x, (h_ - 16) / 2);
+  tft_->print(text);
+  tft_->setTextSize(1);
+}
+
 void Display::drawBoot(const char *msg) {
   clear();
   line(8, 12, "NOKIA-ish", COL_ACCENT);

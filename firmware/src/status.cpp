@@ -15,6 +15,19 @@ void status_set_wifi(SharedStatus *s, bool ok) {
   xSemaphoreGive(s->mu);
 }
 
+void status_set_net(SharedStatus *s, uint8_t net) {
+  if (xSemaphoreTake(s->mu, pdMS_TO_TICKS(50)) != pdTRUE) return;
+  s->net = net;
+  xSemaphoreGive(s->mu);
+}
+
+uint8_t status_net(SharedStatus *s) {
+  if (xSemaphoreTake(s->mu, pdMS_TO_TICKS(50)) != pdTRUE) return NET_OK;
+  uint8_t net = s->net;
+  xSemaphoreGive(s->mu);
+  return net;
+}
+
 void status_set_ip(SharedStatus *s, const char *ip) {
   if (xSemaphoreTake(s->mu, pdMS_TO_TICKS(100)) != pdTRUE) return;
   if (ip) {
